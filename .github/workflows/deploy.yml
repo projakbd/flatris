@@ -3,21 +3,19 @@ name: Flatris EC2 Deployment
 on:
   push:
     branches: [ master ]
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest 
     env:
-      NODE_OPTIONS: --openssl-legacy-provider
       NEXT_PUBLIC_ROLLBAR_CLIENT_TOKEN: ${{ secrets.ROLLBAR_CLIENT_TOKEN }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 18
+      - name: Setup Node.js 12.22.12
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '12.22.12'
           cache: 'yarn'
 
       - name: Install Dependencies
@@ -33,8 +31,12 @@ jobs:
           path: |
             .next/
             server/
+            public/
             package.json
             yarn.lock
+            next.config.js
+            .babelrc
+            babel.config.js
 
   deploy:
     needs: build
@@ -44,27 +46,41 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: flatris-production-build
+          path: ./build-artifacts
 
       - name: Copy Files to EC2
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "."
+          source: "./build-artifacts/*"
           target: "/home/ubuntu/flatris"
+          strip_components: 1
 
       - name: Launch Application
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            
+            nvm use 12.22.12
+            
             cd /home/ubuntu/flatris
+            
             echo "ROLLBAR_SERVER_TOKEN=${{ secrets.ROLLBAR_SERVER_TOKEN }}" > .env
-          
-            yarn install --production
+            echo "NEXT_PUBLIC_ROLLBAR_CLIENT_TOKEN=${{ secrets.ROLLBAR_CLIENT_TOKEN }}" > .env
+            
+            yarn install --frozen-lockfile
             
             pm2 delete flatris || true
-            NODE_OPTIONS=--openssl-legacy-provider pm2 start server/start-prod.js --name "flatris"
+            
+            pm2 start server/start-prod.js \
+              --name "flatris" \
+              --interpreter ./node_modules/.bin/babel-node
+            
+            pm2 save
